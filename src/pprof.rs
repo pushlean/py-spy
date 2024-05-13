@@ -61,10 +61,9 @@ impl PProf {
         me.get_string_index("");
 
         let r#type = me.get_string_index("count");
-        let unit = me.get_string_index("times");
         me.profile
             .sample_type
-            .push(protobuf::ValueType { r#type, unit });
+            .push(protobuf::ValueType { r#type, unit: 0 });
 
         let r#type = me.get_string_index("cpu");
         let unit = me.get_string_index("nanoseconds");
