@@ -1,155 +1,167 @@
 use anyhow::Error;
 use prost::Message;
-use py_spy::{stack_trace, Config, Frame};
 use std::io::Write;
-use std::{borrow::Borrow, collections::HashMap, hash::Hash, io};
+use std::{collections::HashMap, hash::Hash, io};
 
-use crate::proto_gen::perftools::profiles as pprof;
+use crate::config::Config;
+use crate::proto_gen::perftools::profiles as protobuf;
+use crate::stack_trace::{Frame, StackTrace};
 
 fn unset<D: Default>() -> D {
     Default::default()
 }
 
-struct Interner<K, V> {
-    map: HashMap<K, i64>,
-    table: Vec<V>,
+type StringIndex = i64;
+#[derive(Hash, PartialEq, Eq, Clone)]
+struct FunctionData {
+    name: StringIndex,
+    filename: StringIndex,
 }
 
-impl<K: Hash + Eq, V> Interner<K, V> {
-    fn new() -> Self {
-        Self {
-            map: Default::default(),
-            table: vec![],
-        }
-    }
-
-    // or_val argument: next id
-    fn get_index<'q, Q>(&mut self, key: &'q Q, or_val: impl Fn(u64) -> V) -> i64
-    where
-        K: Borrow<Q> + From<&'q Q>,
-        Q: Hash + Eq + ?Sized,
-    {
-        self.map.get(key).copied().unwrap_or_else(|| {
-            let i = self.table.len() as i64;
-            self.table.push(or_val(self.table.len() as u64 + 1));
-            self.map.insert(key.into(), i);
-            i
-        })
-    }
-
-    fn get(&self, index: i64) -> &V {
-        &self.table[index as usize]
-    }
-
-    fn get_mut(&mut self, index: i64) -> &mut V {
-        &mut self.table[index as usize]
-    }
+#[derive(Hash, PartialEq, Eq, Clone)]
+struct LocationData {
+    function_id: u64,
+    line: StringIndex,
 }
 
-struct PProf {
+pub struct PProf {
     config: Config,
-    string_table: Interner<String, String>,
-    function: Interner<String, pprof::Function>,
-    location: Interner<String, pprof::Location>,
-    sample: Interner<Vec<u64>, pprof::Sample>,
+    string_index: HashMap<String, i64>,
+    function_id: HashMap<FunctionData, u64>,
+    location_id: HashMap<LocationData, u64>,
+    sample_index: HashMap<Vec<u64>, usize>,
+    profile: protobuf::Profile,
 }
 
 impl PProf {
     pub fn new(config: &Config) -> Self {
-        let mut string_table = Interner::new();
-        string_table.get_index("", |_| String::from(""));
-        Self {
+        let mut me = Self {
             config: config.clone(),
-            string_table,
-            function: Interner::new(),
-            location: Interner::new(),
-            sample: Interner::new(),
+            string_index: Default::default(),
+            function_id: Default::default(),
+            location_id: Default::default(),
+            sample_index: Default::default(),
+            profile: protobuf::Profile {
+                sample_type: vec![],
+                sample: vec![],
+                mapping: unset(),
+                location: vec![],
+                function: vec![],
+                string_table: vec![],
+                drop_frames: unset(),
+                keep_frames: unset(),
+                time_nanos: unset(), // nice to have, but we don't have this data currently
+                duration_nanos: unset(), // nice to have, but we don't have this data currently
+                period_type: None,
+                period: 1_000_000_000 / config.sampling_rate as i64,
+                comment: vec![],
+                default_sample_type: unset(),
+            },
+        };
+        me.get_string_index("");
+
+        let r#type = me.get_string_index("count");
+        let unit = me.get_string_index("times");
+        me.profile
+            .sample_type
+            .push(protobuf::ValueType { r#type, unit });
+
+        let r#type = me.get_string_index("cpu");
+        let unit = me.get_string_index("nanoseconds");
+        me.profile.period_type = Some(protobuf::ValueType { r#type, unit });
+        me
+    }
+
+    fn get_string_index(&mut self, str: &str) -> StringIndex {
+        if let Some(idx) = self.string_index.get(str) {
+            return *idx;
         }
+        let i = self.profile.string_table.len() as i64;
+        self.string_index.insert(str.to_string(), i);
+        self.profile.string_table.push(str.to_string());
+        i
     }
 
-    fn get_string_index(&mut self, str: &str) -> i64 {
-        self.string_table.get_index(str, |_| str.into())
+    fn get_function_id(&mut self, key: FunctionData) -> u64 {
+        if let Some(id) = self.function_id.get(&key) {
+            return *id;
+        }
+        let id = self.profile.function.len() as u64 + 1;
+        self.profile.function.push(protobuf::Function {
+            id,
+            name: key.name,
+            system_name: unset(),
+            filename: key.filename,
+            start_line: unset(), // denotes the line of the function, which we don't have currently
+        });
+        self.function_id.insert(key, id);
+        id
     }
 
-    fn get_location_id(&mut self, frame: &Frame) -> u64 {
+    fn get_location_id(&mut self, key: LocationData) -> u64 {
+        if let Some(id) = self.location_id.get(&key) {
+            return *id;
+        }
+        let id: u64 = self.profile.location.len() as u64 + 1;
+        self.profile.location.push(protobuf::Location {
+            id,
+            mapping_id: unset(),
+            address: unset(),
+            line: vec![protobuf::Line {
+                function_id: key.function_id,
+                line: if self.config.show_line_numbers {
+                    key.line
+                } else {
+                    unset()
+                },
+                column: unset(),
+            }],
+            is_folded: unset(),
+        });
+        self.location_id.insert(key, id);
+        id
+    }
+
+    fn add_frame(&mut self, frame: &Frame) -> u64 {
         let name = self.get_string_index(&frame.name);
         let filename = self.get_string_index(&frame.filename);
-        let function_absolute_name = format!("{}:{}", frame.filename, frame.name);
-        let function_index: i64 = self.function.get_index(&function_absolute_name, |id| {
-            pprof::Function {
-                id,
-                name,
-                system_name: name,
-                filename,
-                start_line: unset(), // denotes the line of the function, which we don't have currently
-            }
-        });
-        let location_absolute_name = format!("{}/{}", function_absolute_name, frame.line);
-        let location_index = self.location.get_index(&location_absolute_name, |id| {
-            let function = self.function.get(function_index);
-            let line = pprof::Line {
-                function_id: function.id,
-                line: frame.line as i64,
-                column: unset(),
-            };
-            pprof::Location {
-                id,
-                mapping_id: unset(),
-                address: unset(),
-                line: vec![line],
-                is_folded: false,
-            }
-        });
-        let location = self.location.get(location_index);
-        location.id
+        let function_id = self.get_function_id(FunctionData { name, filename });
+        
+        self.get_location_id(LocationData {
+            function_id,
+            line: frame.line as i64,
+        })
     }
 
-    pub fn record(&mut self, stack: &stack_trace::StackTrace) -> Result<(), io::Error> {
+    fn get_sample_index(&mut self, frames: &[u64]) -> usize {
+        if let Some(id) = self.sample_index.get(frames) {
+            return *id;
+        }
+        let i = self.profile.sample.len();
+        self.profile.sample.push(protobuf::Sample {
+            location_id: frames.to_vec(),
+            value: vec![0],
+            label: vec![],
+        });
+        self.sample_index.insert(frames.to_vec(), i);
+        i
+    }
+
+    pub fn record(&mut self, stack: &StackTrace) -> Result<(), io::Error> {
         let frames = stack
             .frames
             .iter()
-            .map(|frame| self.get_location_id(frame))
+            .map(|frame| self.add_frame(frame))
             .collect::<Vec<_>>();
 
-        let sample_index = self
-            .sample
-            .get_index(frames.as_slice(), |_| pprof::Sample {
-                location_id: frames.clone(),
-                value: vec![0],
-                label: vec![],
-            });
-        self.sample.get_mut(sample_index).value[0] += 1;
+        let sample_index = self.get_sample_index(&frames);
+
+        self.profile.sample[sample_index].value[0] += 1;
         Ok(())
     }
 
-    fn foo(&mut self) -> pprof::Profile {
-        pprof::Profile {
-            sample_type: vec![pprof::ValueType {
-                r#type: self.get_string_index("count"),
-                unit: self.get_string_index("times"),
-            }],
-            sample: self.sample.table.clone(),
-            mapping: unset(),
-            location: self.location.table.clone(),
-            function: self.function.table.clone(),
-            string_table: self.string_table.table.clone(),
-            drop_frames: unset(),
-            keep_frames: unset(),
-            time_nanos: unset(), // nice to have, but we don't have this data currently
-            duration_nanos: unset(), // nice to have, but we don't have this data currently
-            period_type: Some(pprof::ValueType {
-                r#type: self.get_string_index("cpu"),
-                unit: self.get_string_index("nanoseconds"),
-            }),
-            period: 1_000_000_000 / self.config.sampling_rate as i64,
-            comment: vec![],
-            default_sample_type: unset(),
-        }
-    }
-
-    pub fn write(&mut self, w: &mut dyn Write) -> Result<(), Error> {
-        let profile = self.foo();
-        w.write_all(&profile.encode_to_vec())?;
+    pub fn write_all(&self, w: &mut dyn Write) -> Result<(), Error> {
+        w.write_all(&self.profile.encode_to_vec())?;
         Ok(())
     }
 }
