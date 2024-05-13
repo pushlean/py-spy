@@ -13,9 +13,10 @@ mod coredump;
 mod cython;
 mod dump;
 mod flamegraph;
-mod proto_gen;
 #[cfg(unwind)]
 mod native_stack_trace;
+mod pprof;
+mod proto_gen;
 mod python_bindings;
 mod python_data_access;
 mod python_interpreters;
