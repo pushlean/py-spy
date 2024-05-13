@@ -168,8 +168,8 @@ impl PProf {
         if let Some(name) = &stack.thread_name {
             label.push(self.make_label("thread_name", name));
         }
-        label.push(self.make_label_num("thread_id", stack.thread_id as i64));
-        label.push(self.make_label_num("pid", stack.pid as i64));
+        label.push(self.make_label("thread_id", &stack.thread_id.to_string()));
+        label.push(self.make_label("pid", &stack.pid.to_string()));
 
         self.profile.sample.push(protobuf::Sample {
             location_id: frames.to_vec(),
