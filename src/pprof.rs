@@ -1,6 +1,6 @@
 use anyhow::Error;
 use prost::Message;
-use py_spy::{stack_trace, Config};
+use py_spy::{stack_trace, Config, Frame};
 use std::io::Write;
 use std::{borrow::Borrow, collections::HashMap, hash::Hash, io};
 
@@ -51,7 +51,7 @@ struct PProf {
     string_table: Interner<String, String>,
     function: Interner<String, pprof::Function>,
     location: Interner<String, pprof::Location>,
-    sample: Interner<String, pprof::Sample>,
+    sample: Interner<Vec<u64>, pprof::Sample>,
 }
 
 impl PProf {
@@ -71,51 +71,49 @@ impl PProf {
         self.string_table.get_index(str, |_| str.into())
     }
 
+    fn get_location_id(&mut self, frame: &Frame) -> u64 {
+        let name = self.get_string_index(&frame.name);
+        let filename = self.get_string_index(&frame.filename);
+        let function_absolute_name = format!("{}:{}", frame.filename, frame.name);
+        let function_index: i64 = self.function.get_index(&function_absolute_name, |id| {
+            pprof::Function {
+                id,
+                name,
+                system_name: name,
+                filename,
+                start_line: unset(), // denotes the line of the function, which we don't have currently
+            }
+        });
+        let location_absolute_name = format!("{}/{}", function_absolute_name, frame.line);
+        let location_index = self.location.get_index(&location_absolute_name, |id| {
+            let function = self.function.get(function_index);
+            let line = pprof::Line {
+                function_id: function.id,
+                line: frame.line as i64,
+                column: unset(),
+            };
+            pprof::Location {
+                id,
+                mapping_id: unset(),
+                address: unset(),
+                line: vec![line],
+                is_folded: false,
+            }
+        });
+        let location = self.location.get(location_index);
+        location.id
+    }
+
     pub fn record(&mut self, stack: &stack_trace::StackTrace) -> Result<(), io::Error> {
         let frames = stack
             .frames
             .iter()
-            .map(|frame| {
-                let name = self.get_string_index(&frame.name);
-                let filename = self.get_string_index(&frame.filename);
-                let function_absolute_name = format!("{}:{}", frame.filename, frame.name);
-                let function_index = self.function.get_index(&function_absolute_name, |id| {
-                    pprof::Function {
-                        id,
-                        name,
-                        system_name: name,
-                        filename,
-                        start_line: unset(), // denotes the line of the function, which we don't have currently
-                    }
-                });
-                let location_absolute_name = format!("{}/{}", function_absolute_name, frame.line);
-                let location_index = self.location.get_index(&location_absolute_name, |id| {
-                    let function = self.function.get(function_index);
-                    let line = pprof::Line {
-                        function_id: function.id,
-                        line: frame.line as i64,
-                        column: unset(),
-                    };
-                    pprof::Location {
-                        id,
-                        mapping_id: unset(),
-                        address: unset(),
-                        line: vec![line],
-                        is_folded: false,
-                    }
-                });
-                let location = self.location.get(location_index);
-                location.id
-            })
+            .map(|frame| self.get_location_id(frame))
             .collect::<Vec<_>>();
-        let stack_frame_key = frames
-            .iter()
-            .map(|id| id.to_string())
-            .collect::<Vec<_>>()
-            .join("-");
+
         let sample_index = self
             .sample
-            .get_index(&stack_frame_key, move |_| pprof::Sample {
+            .get_index(frames.as_slice(), |_| pprof::Sample {
                 location_id: frames.clone(),
                 value: vec![0],
                 label: vec![],
@@ -135,12 +133,15 @@ impl PProf {
             location: self.location.table.clone(),
             function: self.function.table.clone(),
             string_table: self.string_table.table.clone(),
-            drop_frames: unset(),   
-            keep_frames: unset(),   
-            time_nanos: unset(),     // nice to have, but we don't have this data currently
+            drop_frames: unset(),
+            keep_frames: unset(),
+            time_nanos: unset(), // nice to have, but we don't have this data currently
             duration_nanos: unset(), // nice to have, but we don't have this data currently
-            period_type: todo!(),    // what unit is sampling_rate? probably 1/sec
-            period: 1_000_000 / self.config.sampling_rate as i64,
+            period_type: Some(pprof::ValueType {
+                r#type: self.get_string_index("cpu"),
+                unit: self.get_string_index("nanoseconds"),
+            }),
+            period: 1_000_000_000 / self.config.sampling_rate as i64,
             comment: vec![],
             default_sample_type: unset(),
         }
