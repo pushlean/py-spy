@@ -29,7 +29,7 @@ pub struct PProf {
     string_index: HashMap<String, i64>,
     function_id: HashMap<FunctionData, u64>,
     location_id: HashMap<LocationData, u64>,
-    sample_index: HashMap<Vec<u64>, usize>,
+    sample_index: HashMap<u64, HashMap<Vec<u64>, usize>>,
     profile: protobuf::Profile,
 }
 
@@ -54,7 +54,7 @@ impl PProf {
                 duration_nanos: unset(), // nice to have, but we don't have this data currently
                 period_type: None,
                 period: 1_000_000_000 / config.sampling_rate as i64,
-                comment: vec![],
+                comment: unset(),
                 default_sample_type: unset(),
             },
         };
@@ -132,17 +132,51 @@ impl PProf {
         })
     }
 
-    fn get_sample_index(&mut self, frames: &[u64]) -> usize {
-        if let Some(id) = self.sample_index.get(frames) {
-            return *id;
+    fn make_label(&mut self, key: &str, value: &str) -> protobuf::Label {
+        let thread_id_label = self.get_string_index(key);
+        let thread_name_index = self.get_string_index(value);
+        protobuf::Label {
+            key: thread_id_label,
+            str: thread_name_index,
+            num: unset(),
+            num_unit: 0,
         }
-        let i = self.profile.sample.len();
+    }
+
+    fn make_label_num(&mut self, key: &str, num: i64) -> protobuf::Label {
+        let thread_id_label = self.get_string_index(key);
+        protobuf::Label {
+            key: thread_id_label,
+            str: unset(),
+            num,
+            num_unit: 0,
+        }
+    }
+
+    fn get_sample_index(&mut self, frames: &[u64], stack: &StackTrace) -> usize {
+        // thread ids are unique system-wide
+        let innermap = self.sample_index.entry(stack.thread_id).or_insert(Default::default());
+        if let Some(i) = innermap.get(frames) {
+            return *i;
+        }
+
+        let i: usize = self.profile.sample.len();
+        innermap.insert(frames.to_vec(), i);
+        
+
+        let mut label = vec![];
+        if let Some(name) = &stack.thread_name {
+            label.push(self.make_label("thread_name", name));
+        }
+        label.push(self.make_label_num("thread_id", stack.thread_id as i64));
+        label.push(self.make_label_num("pid", stack.pid as i64));
+
         self.profile.sample.push(protobuf::Sample {
             location_id: frames.to_vec(),
             value: vec![0],
-            label: vec![],
+            label,
         });
-        self.sample_index.insert(frames.to_vec(), i);
+
         i
     }
 
@@ -153,7 +187,7 @@ impl PProf {
             .map(|frame| self.add_frame(frame))
             .collect::<Vec<_>>();
 
-        let sample_index = self.get_sample_index(&frames);
+        let sample_index = self.get_sample_index(&frames, stack);
 
         self.profile.sample[sample_index].value[0] += 1;
         Ok(())
