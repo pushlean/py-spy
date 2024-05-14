@@ -15,6 +15,8 @@ mod dump;
 mod flamegraph;
 #[cfg(unwind)]
 mod native_stack_trace;
+mod pprof;
+mod proto_gen;
 mod python_bindings;
 mod python_data_access;
 mod python_interpreters;
@@ -38,6 +40,7 @@ use console::style;
 
 use config::{Config, FileFormat, RecordDuration};
 use console_viewer::ConsoleViewer;
+use pprof::PProf;
 use stack_trace::{Frame, StackTrace};
 
 use chrono::{Local, SecondsFormat};
@@ -130,6 +133,16 @@ impl Recorder for RawFlamegraph {
     }
 }
 
+impl Recorder for PProf {
+    fn increment(&mut self, trace: &stack_trace::StackTrace) -> Result<(), Error> {
+        Ok(self.record(trace)?)
+    }
+
+    fn write(&self, w: &mut dyn Write) -> Result<(), Error> {
+        self.write_all(w)
+    }
+}
+
 fn record_samples(pid: remoteprocess::Pid, config: &Config) -> Result<(), Error> {
     let mut output: Box<dyn Recorder> = match config.format {
         Some(FileFormat::flamegraph) => {
@@ -142,6 +155,7 @@ fn record_samples(pid: remoteprocess::Pid, config: &Config) -> Result<(), Error>
         Some(FileFormat::chrometrace) => {
             Box::new(chrometrace::Chrometrace::new(config.show_line_numbers))
         }
+        Some(FileFormat::pprof) => Box::new(pprof::PProf::new(config)),
         None => return Err(format_err!("A file format is required to record samples")),
     };
 
@@ -153,6 +167,7 @@ fn record_samples(pid: remoteprocess::Pid, config: &Config) -> Result<(), Error>
                 Some(FileFormat::speedscope) => "json",
                 Some(FileFormat::raw) => "txt",
                 Some(FileFormat::chrometrace) => "json",
+                Some(FileFormat::pprof) => "rawpb",
                 None => return Err(format_err!("A file format is required to record samples")),
             };
             let local_time = Local::now().to_rfc3339_opts(SecondsFormat::Secs, true);
@@ -363,6 +378,13 @@ fn record_samples(pid: remoteprocess::Pid, config: &Config) -> Result<(), Error>
                 lede, filename, samples, errors
             );
             println!("{}Visit chrome://tracing to view", lede);
+        }
+        FileFormat::pprof => {
+            println!(
+                "{}Wrote pprof trace to '{}'. Samples: {} Errors: {}",
+                lede, filename, samples, errors
+            );
+            println!("{}Use pprof https://github.com/google/pprof to view", lede);
         }
     };
 
