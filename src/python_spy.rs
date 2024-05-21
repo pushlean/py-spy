@@ -59,8 +59,16 @@ impl PythonSpy {
         #[cfg(target_os = "freebsd")]
         let _lock = process.lock();
 
-        let version = get_python_version(&python_info, &process)?;
-        info!("python version {} detected", version);
+        let version: Version;
+        if config.python_version.is_some() {
+            let tmp = config.python_version.clone().unwrap();
+            let version_bytes: &[u8] = tmp.as_bytes();
+            version = Version::scan_bytes(version_bytes).unwrap();
+            info!("python version {} parsed", version);
+        } else {
+            version = get_python_version(&python_info, &process)?;
+            info!("python version {} detected", version);
+        }
 
         let interpreter_address = get_interpreter_address(&python_info, &process, &version)?;
         info!("Found interpreter at 0x{:016x}", interpreter_address);

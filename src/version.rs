@@ -192,5 +192,17 @@ mod tests {
                 build_metadata: Some("cinder".to_owned()),
             }
         );
+
+        let version = Version::scan_bytes(b"3.11.4 (main, redacted, redacted) [GCC 11.2.0]").unwrap();
+        assert_eq!(
+            version,
+            Version {
+                major: 3,
+                minor: 11,
+                patch: 4,
+                release_flags: "".to_owned(),
+                build_metadata: None,
+            }
+        );
     }
 }
