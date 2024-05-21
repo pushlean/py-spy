@@ -59,6 +59,8 @@ pub struct Config {
     pub refresh_seconds: f64,
     #[doc(hidden)]
     pub core_filename: Option<String>,
+    #[doc(hidden)]
+    pub python_version: Option<String>,
 }
 
 #[allow(non_camel_case_types)]
@@ -140,6 +142,7 @@ impl Default for Config {
             lineno: LineNo::LastInstruction,
             refresh_seconds: 1.0,
             core_filename: None,
+            python_version: None,
         }
     }
 }
@@ -220,6 +223,15 @@ impl Config {
             .arg(program.clone())
             .arg(pid.clone().required_unless_present("python_program"))
             .arg(full_filenames.clone())
+            .arg(
+                Arg::new("python_version")
+                    .short('v')
+                    .long("python_version")
+                    .value_name("version")
+                    .help("Output of running sys.version in Python")
+                    .takes_value(true)
+                    .required(false),
+            )
             .arg(
                 Arg::new("output")
                     .short('o')
@@ -396,6 +408,7 @@ impl Config {
                     std::process::exit(1);
                 }
                 config.hide_progress = matches.occurrences_of("hideprogress") > 0;
+                config.python_version = matches.value_of("python_version").map(|f| f.to_owned());
             }
             "top" => {
                 config.sampling_rate = matches.value_of_t("rate")?;
