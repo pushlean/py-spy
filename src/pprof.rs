@@ -125,7 +125,7 @@ impl PProf {
         let name = self.get_string_index(&frame.name);
         let filename = self.get_string_index(&frame.filename);
         let function_id = self.get_function_id(FunctionData { name, filename });
-        
+
         self.get_location_id(LocationData {
             function_id,
             line: frame.line as i64,
@@ -155,14 +155,16 @@ impl PProf {
 
     fn get_sample_index(&mut self, frames: &[u64], stack: &StackTrace) -> usize {
         // thread ids are unique system-wide
-        let innermap = self.sample_index.entry(stack.thread_id).or_insert(Default::default());
+        let innermap = self
+            .sample_index
+            .entry(stack.thread_id)
+            .or_insert(Default::default());
         if let Some(i) = innermap.get(frames) {
             return *i;
         }
 
         let i: usize = self.profile.sample.len();
         innermap.insert(frames.to_vec(), i);
-        
 
         let mut label = vec![];
         if let Some(name) = &stack.thread_name {

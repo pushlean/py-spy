@@ -193,7 +193,8 @@ mod tests {
             }
         );
 
-        let version = Version::scan_bytes(b"3.11.4 (main, redacted, redacted) [GCC 11.2.0]").unwrap();
+        let version =
+            Version::scan_bytes(b"3.11.4 (main, redacted, redacted) [GCC 11.2.0]").unwrap();
         assert_eq!(
             version,
             Version {

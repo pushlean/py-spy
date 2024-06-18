@@ -4,13 +4,13 @@
 pub struct Profile {
     /// A description of the samples associated with each Sample.value.
     /// For a cpu profile this might be:
-///```ignore
+    ///```ignore
     ///    \[["cpu","nanoseconds"]\] or \[["wall","seconds"]\] or \[["syscall","count"]\]
-///```
+    ///```
     /// For a heap profile, this might be:
-///```ignore
+    ///```ignore
     ///    \[["allocations","count"\], \["space","bytes"]\],
-///```
+    ///```
     /// If one of the values represents the number of events represented
     /// by the sample, by convention it should be at index 0 and use
     /// sample_type.unit == "count".
@@ -204,10 +204,10 @@ pub struct Location {
     /// preceding entries were inlined.
     ///
     /// E.g., if memcpy() is inlined into printf:
-///```ignore
+    ///```ignore
     ///     line\[0\].function_name == "memcpy"
     ///     line\[1\].function_name == "printf"
-///```
+    ///```
     #[prost(message, repeated, tag = "4")]
     pub line: ::prost::alloc::vec::Vec<Line>,
     /// Provides an indication that multiple symbols map to this location's
