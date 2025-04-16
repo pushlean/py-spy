@@ -74,7 +74,8 @@ impl NativeStack {
         let mut merged = Vec::new();
 
         // merge the native_stack and python stack together
-        for addr in native_stack {
+        let stack_len = native_stack.len();
+        for (i, addr) in native_stack.into_iter().enumerate() {
             // check in the symbol cache if we have looked up this symbol yet
             let cached_symbol = self.symbol_cache.get(&addr).cloned();
 
@@ -82,7 +83,7 @@ impl NativeStack {
             let is_python_addr = self.python.as_ref().map_or(false, |m| m.contains(addr))
                 || self.libpython.as_ref().map_or(false, |m| m.contains(addr));
             let merge_frame = &mut |frame: &remoteprocess::StackFrame| {
-                match self.get_merge_strategy(is_python_addr, frame) {
+                match self.get_merge_strategy(is_python_addr, frame, i == stack_len - 1) {
                     MergeType::Ignore => {}
                     MergeType::MergeNativeFrame => {
                         if let Some(python_frame) = self.translate_native_frame(frame) {
@@ -204,6 +205,7 @@ impl NativeStack {
         &self,
         check_python: bool,
         frame: &remoteprocess::StackFrame,
+        is_last_frame: bool,
     ) -> MergeType {
         if check_python {
             if let Some(ref function) = frame.function {
@@ -251,6 +253,11 @@ impl NativeStack {
                 MergeType::Ignore
             }
         } else {
+            // hack: since 3.12, for some reason the top-level frame is not in the Python binary's address space
+            // so ignore the last frame by module name instead
+            if is_last_frame && frame.module.contains("python") {
+                return MergeType::Ignore;
+            }
             MergeType::MergeNativeFrame
         }
     }
